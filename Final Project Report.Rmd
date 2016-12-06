@@ -1,0 +1,195 @@
+---
+title: "Practical Machine Learning Final Project"
+author: "Corey Berg"
+date: "December 5, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using the datasets provided at https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv and https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv, the goal of this analysis was to build a predictive model to the predict the manner in which participants did certain exercises based on accelerometer data.  The first thing I did was load both datasets into R as follows:
+
+
+```{r loading}
+train <- read.csv("pml-training.csv",stringsAsFactors = TRUE)
+test <- read.csv("pml-testing.csv",stringsAsFactors = TRUE)
+```
+
+
+The next step was to look at the response variable we are trying to predict (i.e. "classe").  I quickly used the table function to see how many possible levels were for this factor variable.  After doing so, I saw the possible levels were "A","B","C","D", and "E".  At this point, I was able to begin more formal exploratory analysis.
+
+
+## Cramer's V: Correlation Between Variables
+
+In order to get a sense of the association between the variables in the dataset and the reponse variable ("classe"), I calculated Cramer's V.  I leveraged code from http://sas-and-r.blogspot.com/2011/06/example-839-calculating-cramers-v.html to help me in doing so.
+
+```{r cramers, eval=FALSE}
+library(plyr)
+library(dplyr)
+
+cv.test = function(x,y) {
+      CV = sqrt(chisq.test(x, y, correct=FALSE)$statistic /
+                      (length(x) * (min(length(unique(x)),length(unique(y))) - 1)))
+
+      return(as.numeric(CV))
+}
+
+var <- c()
+cramer <- c()
+
+for(i in 1:ncol(train)){
+
+      var[i] = names(train)[i]
+      cramer[i] = cv.test(train$classe,train[,i])
+      
+}
+
+cramers_v <- data.frame(var,cramer) %>% 
+      arrange(desc(cramer))
+
+
+```
+
+
+The most notable results of this analysis were that num_window and X (i.e. the row index in the dataset) both had a Cramer's V of 1 (i.e. perfectly correlated with the outcome, classe).  In any predictive model, the modeler should be skeptical when seeing this level of association/corrleation.  So, I decided I would not include these two variables, as well as the following variables (mostly removed due to implementation considerations):
+
+1. raw_timestamp_part_1
+2. raw_timestamp_part_2
+3. cvtd_timestamp
+4. user_name
+5. new_window
+
+
+Finally, due to quality concerns, I decided not to use any variables that had blank or missing values as predictors in the model.  I removed these variables using the following code:
+
+```{r var_removal, eval=FALSE}
+modeling_data = train
+flag_for_removal <- c()
+i = 1
+j= 1
+for(i in 1:ncol(train)){
+      
+      
+      if(sum(train[,i]=="") > 0 | sum(is.na(train[,i])==TRUE) >0){
+            flag_for_removal[j] = i
+            j = j +1
+      }
+      
+}
+
+
+
+modeling_data <- train[,-flag_for_removal]
+```
+
+
+## Building Predictive Model
+
+I dedcided to use a random forest with 50 trees to build a model.  To help prevent over-fitting, I first converted all numeric variables into factor variables by binning into quintiles.  I did not use any cross-validation, mostly due to the fact that this initial model actually led to 95% accuracy on the out-of-sample test set.  I was fairly confident that the out-of-sample error rate would be <10% given that the error rate on the train dataset approached 100%.  In an ideal world, I would have probably used fewer variables to fit random forests and used cross-validation to refine the model.  However, based on the results (i.e. predicting 19 out of 20 test cases correctly), I felt confident that this relatively simple model was satisfactory for our purposes.
+
+
+See below for the rest of the code used to construct the model.
+
+
+```{r modeling, eval=FALSE}
+modeling_data <- modeling_data %>% select(-X,-num_window,-raw_timestamp_part_1,-raw_timestamp_part_2,-cvtd_timestamp,
+                                          -user_name,-new_window)
+
+
+modeling_data_pre_cut <- modeling_data
+
+#To save on computational time and avoid overfitting, group all numeric variables into quintiles
+for(i in 1:(ncol(modeling_data)-1)){
+      
+    modeling_data[,i] =  cut(modeling_data[,i], breaks=c(quantile(modeling_data[,i], probs = seq(0, 1, by = 0.20))), 
+          include.lowest=TRUE)
+
+}
+
+
+glimpse(modeling_data)
+#End of creation of modeling dataset
+
+
+
+predictors <- modeling_data %>% select(-classe)
+classe <- modeling_data$classe
+
+fit_1 <- train(predictors,classe,method="rf",ntree=50)
+
+
+
+
+
+
+#################################### PREDICT ON TEST DATASET #############################
+
+
+flag_for_removal <- c()
+i = 1
+j= 1
+for(i in 1:ncol(test)){
+      
+      
+      if(sum(test[,i]=="") > 0 | sum(is.na(test[,i])==TRUE) >0){
+            flag_for_removal[j] = i
+            j = j +1
+      }
+      
+}
+
+
+
+test <- test[,-flag_for_removal]
+#Also need to remove variables which seem to be beyond reasonably highly correlated with classe
+#Also removing user name because from implementation perspective, we want to detect from
+#other metrics
+test <- test %>% select(-X,-num_window,-raw_timestamp_part_1,-raw_timestamp_part_2,-cvtd_timestamp,
+                                          -user_name,-new_window)
+
+#To save on computational time and avoid overfitting, group all numeric variables into quintiles
+for(i in 1:(ncol(test)-1)){
+      
+     test[,i] = cut(test[,i], breaks=c(quantile(modeling_data_pre_cut[,i], probs = seq(0, 1, by = 0.20))), 
+          include.lowest=TRUE)
+      
+}
+
+
+
+predictions_fit_1 <- predict(fit_1,test,ntree=50)
+#Ended up getting 95% of classe's right on out of sample dataset
+#Given this out-of-sample accuracy, I did not go back and re-visit models that use cross-validation
+#for parameter tuning!
+#Predictions based on algorithm with no cross-validation
+#1) C
+#2) A
+#3) B
+#4) A
+#5) A
+#6) E
+#7) D
+#8) B
+#9) A
+#10) A
+#11) B
+#12) C
+#13) B
+#14) A
+#15) E
+#16) E
+#17) A
+#18) B
+#19) B
+#20) B
+
+predictions_fit_1
+```
+
+
+
+
